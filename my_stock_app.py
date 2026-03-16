@@ -2,95 +2,109 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import requests
+import plotly.graph_objects as go
 from sklearn.ensemble import RandomForestClassifier
 
-# --- 重要：取得したIDとトークンをここに貼り付け ---
-LINE_TOKEN = "ここにアクセストークンを貼り付け"
-LINE_USER_ID = "ここにUから始まるユーザーIDを貼り付け"
+# --- 設定：お送りいただいた最新情報をセット ---
+LINE_TOKEN = "LucgCjeDzafsZlaOsr1teLcP3ovJAbJpF/YN1coBeBDPtuBepCm/dEnnsaobgfYRtcE73DzhG2YPZzEC8CS6A+oia3kxHWKCMXKcV7EEjiN9xdiEfbXd529mqYdYwyFoUWrSGimxJDy391Ze8UlE8QdB04t89/1O/w1cDnyilFU="
+LINE_USER_ID = "Uce6411ae299c82e7c03aa3b0c771def9"
+
+# --- 銘柄マスター（最高に選びやすいリスト） ---
+STOCKS = {
+    "トヨタ自動車": "7203.T", "任天堂": "7974.T", "ソニーグループ": "6758.T",
+    "ソフトバンクG": "9984.T", "ファーストリテイリング": "9983.T", "キーエンス": "6861.T",
+    "三菱UFJ FG": "8306.T", "東京エレクトロン": "8035.T", "リクルートHD": "6098.T", "信越化学": "4063.T"
+}
+CRYPTOS = {
+    "ビットコイン (BTC)": "BTC-JPY", "イーサリアム (ETH)": "ETH-JPY",
+    "リップル (XRP)": "XRP-JPY", "ソラナ (SOL)": "SOL-JPY", "ドージコイン (DOGE)": "DOGE-JPY"
+}
 
 # --- LINE送信関数 ---
 def send_line(message):
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
     data = {"to": LINE_USER_ID, "messages": [{"type": "text", "text": message}]}
-    requests.post(url, headers=headers, json=data)
+    return requests.post(url, headers=headers, json=data)
 
-# --- 画面構成 ---
-st.set_page_config(page_title="最強AI投資秘書", layout="wide")
-st.title("💼 AI投資エージェント：戦略アドバイザー版")
+# --- ページ設定 ---
+st.set_page_config(page_title="AI投資秘書 PRO", layout="wide")
+st.title("🏛️ AI投資秘書：プロフェッショナル・ダッシュボード")
 
-# サイドバー設定
-st.sidebar.header("💰 運用設定")
-budget = st.sidebar.number_input("投資総予算 (円)", min_value=100000, value=1000000, step=100000)
-risk_per_trade = st.sidebar.slider("1銘柄への最大投入比率 (%)", 5, 50, 20)
+# --- UI：銘柄選択プルダウン（サイドバー） ---
+st.sidebar.header("📊 資産ポートフォリオ")
+asset_cat = st.sidebar.radio("アセットクラスを選択", ["日本株 (主要10銘柄)", "暗号資産 (主要5銘柄)"])
 
-ticker_symbol = st.sidebar.text_input("分析銘柄コード", "7203.T")
+if asset_cat == "日本株 (主要10銘柄)":
+    selected_name = st.sidebar.selectbox("銘柄を選択してください", list(STOCKS.keys()))
+    ticker_symbol = STOCKS[selected_name]
+else:
+    selected_name = st.sidebar.selectbox("通貨を選択してください", list(CRYPTOS.keys()))
+    ticker_symbol = CRYPTOS[selected_name]
 
-# --- データ取得とAI学習 ---
-t_obj = yf.Ticker(ticker_symbol)
-df = t_obj.history(period="3y")
-info = t_obj.info
+# --- 運用・リスク設定 ---
+st.sidebar.markdown("---")
+budget = st.sidebar.number_input("投資総予算 (円)", value=1000000, step=100000)
+loss_cut_rate = st.sidebar.slider("損切りライン (%)", 1, 20, 5)
+
+# --- データ取得 & エラーガード ---
+@st.cache_data(ttl=3600)
+def load_data(symbol):
+    if not symbol: return pd.DataFrame() # 空の場合は空のDFを返す
+    data = yf.download(symbol, period="3y", interval="1d", auto_adjust=True)
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
+    return data
+
+df = load_data(ticker_symbol)
+
+if df.empty:
+    st.error("データの取得に失敗しました。銘柄コードを確認してください。")
+    st.stop()
+
 current_price = df['Close'].iloc[-1]
 
-def get_ai_advice():
-    # 指標作成（テクニカル）
-    df['MA5'] = df['Close'].rolling(5).mean()
-    df['RSI'] = (df['Close'].diff().clip(lower=0).rolling(14).mean() / df['Close'].diff().abs().rolling(14).mean()) * 100
-    df['Target'] = (df['Close'].shift(-1) > df['Close']).astype(int)
-    
-    # ファンダメンタルズ（ROE/PER）
-    roe = info.get('returnOnEquity', 0.1)
-    per = info.get('trailingPE', 15)
-    
-    df['ROE'] = roe
-    df['PER'] = per
-    
-    train_data = df.dropna()
-    features = ['Close', 'MA5', 'RSI', 'ROE', 'PER']
-    
-    model = RandomForestClassifier(n_estimators=200, random_state=42)
-    model.fit(train_data[features][:-1], train_data['Target'][:-1])
-    
-    # 予測実行
-    pred = model.predict(train_data[features].tail(1))[0]
-    return pred, roe, per
+# --- メインレイアウト ---
+tab1, tab2 = st.tabs(["🎯 リアルタイム戦略", "📈 パフォーマンス検証"])
 
-# --- メイン画面 ---
-st.subheader(f"🔍 {info.get('longName')} の分析結果")
+with tab1:
+    st.subheader(f"🔍 {selected_name} ({ticker_symbol}) の分析")
+    col1, col2, col3 = st.columns(3)
+    
+    stop_loss_price = current_price * (1 - loss_cut_rate / 100)
+    col1.metric("現在価格", f"{current_price:,.1f} 円")
+    col2.metric("損切り目安", f"{stop_loss_price:,.1f} 円", delta=f"-{loss_cut_rate}%")
+    
+    # チャート表示
+    fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
+    fig.update_layout(height=450, margin=dict(l=0, r=0, b=0, t=30))
+    st.plotly_chart(fig, use_container_width=True)
 
-if st.button("AIに投資アドバイスを求める"):
-    pred, roe, per = get_ai_advice()
-    
-    # 【新機能】購入株数の計算ロジック
-    # 予算の20%を上限とし、現在の株価で割る（単元株100株単位を考慮）
-    max_invest = budget * (risk_per_trade / 100)
-    recommended_shares = (max_invest // current_price // 100) * 100
-    
-    if pred == 1:
-        status = "【上昇 📈】"
-        advice = f"現在の株価 {current_price:.1f}円に対し、予算に基づき **{int(recommended_shares)}株** の購入を検討してください。"
-    else:
-        status = "【下落・横ばい 📉】"
-        advice = "現在は「待ち」の局面です。無理なエントリーは控えましょう。"
+    if st.button("🚀 AIに投資戦略を指示させる"):
+        with st.spinner('計算中...'):
+            # AI学習ロジック（簡略化版）
+            df['MA5'] = df['Close'].rolling(5).mean()
+            df['RSI'] = (df['Close'].diff().clip(lower=0).rolling(14).mean() / df['Close'].diff().abs().rolling(14).mean()) * 100
+            df['Target'] = (df['Close'].shift(-1) > df['Close']).astype(int)
+            train = df.dropna()
+            
+            features = ['Close', 'MA5', 'RSI']
+            model = RandomForestClassifier(n_estimators=100, random_state=42)
+            model.fit(train[features][:-1], train['Target'][:-1])
+            pred = model.predict(train[features].tail(1))[0]
+            
+            res = "【上昇傾向 📈】" if pred == 1 else "【下落注意 📉】"
+            shares = (budget * 0.2) / current_price
+            if asset_cat == "日本株 (主要10銘柄)": shares = (shares // 100) * 100
+            
+            msg = f"【AI秘書通知】\n対象: {selected_name}\n判定: {res}\n目標数量: {shares:.2f}\n損切価格: {stop_loss_price:,.1f}円"
+            
+            resp = send_line(msg)
+            if resp.status_code == 200:
+                st.success(f"予測結果: {res} をLINEに送信しました！")
+                st.balloons()
+            else:
+                st.error(f"LINE送信失敗(Code:{resp.status_code}): {resp.text}")
 
-    # 画面表示
-    st.success(f"予測結果: {status}")
-    st.info(f"アドバイス: {advice}")
-    
-    # LINE通知
-    msg = (f"【AI投資秘書】\n"
-           f"銘柄: {info.get('longName')}\n"
-           f"予測: {status}\n"
-           f"現在値: {current_price:.1f}円\n"
-           f"推奨株数: {int(recommended_shares)}株\n"
-           f"ROE: {roe*100:.1f}% / PER: {per:.1f}倍")
-    
-    try:
-        send_line(msg)
-        st.balloons()
-        st.write("✅ スマホのLINEにアドバイスを送信しました！")
-    except:
-        st.error("LINE送信に失敗しました。Uから始まるIDとトークンを再確認してください。")
-
-st.markdown("---")
-st.caption("※会計的視点: ROEが高い銘柄ほど効率的に資本を運用しています。AIもその数値を評価に加えています。")
+with tab2:
+    st.write("過去1年間のAI戦略シミュレーション（準備中）")
