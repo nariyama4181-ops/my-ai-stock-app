@@ -6,11 +6,10 @@ import requests
 import plotly.graph_objects as go
 from sklearn.ensemble import RandomForestClassifier
 
-# --- 1. 基本設定（小樽さんの情報をセット） ---
+# --- 1. 基本設定（一斉配信のためUSER_IDは不要になりました） ---
 LINE_TOKEN = "LucgCjeDzafsZlaOsr1teLcP3ovJAbJpF/YN1coBeBDPtuBepCm/dEnnsaobgfYRtcE73DzhG2YPZzEC8CS6A+oia3kxHWKCMXKcV7EEjiN9xdiEfbXd529mqYdYwyFoUWrSGimxJDy391Ze8UlE8QdB04t89/1O/w1cDnyilFU="
-LINE_USER_ID = "Uce6411ae299c82e7c03aa3b0c771def9"
 
-# 銘柄リスト
+# 銘柄リスト（全15銘柄）
 STOCKS = {
     "トヨタ": "7203.T", "任天堂": "7974.T", "ソニーG": "6758.T", "SBG": "9984.T", 
     "ファストリ": "9983.T", "キーエンス": "6861.T", "三菱UFJ": "8306.T", 
@@ -21,14 +20,16 @@ CRYPTOS = {
     "ソラナ": "SOL-JPY", "ドージコイン": "DOGE-JPY"
 }
 
-# --- 2. 共通関数 ---
-def send_line(message):
-    url = "https://api.line.me/v2/bot/message/push"
+# --- 2. 共通関数（一斉配信・指標計算・ニュース生成） ---
+def broadcast_line(message):
+    """友だち追加している全員に一斉送信する関数"""
+    url = "https://api.line.me/v2/bot/message/broadcast"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
-    data = {"to": LINE_USER_ID, "messages": [{"type": "text", "text": message}]}
+    data = {"messages": [{"type": "text", "text": message}]}
     return requests.post(url, headers=headers, json=data)
 
 def add_indicators(df):
+    """テクニカル指標（MACD, BB, RSI, MA）を計算"""
     # MACD
     exp1 = df['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df['Close'].ewm(span=26, adjust=False).mean()
@@ -45,37 +46,38 @@ def add_indicators(df):
     return df
 
 def get_detailed_news():
+    """5つのジャンルの詳細ニュース枠を作成"""
     news_text = "📰 【本日の重要マーケットニュース 5選】\n\n"
     categories = [
-        "🇯🇵 日本株：日経平均の動向と主要企業の決算影響",
-        "🇺🇸 米国株：NYダウ・ナスダック、金利動向による変化",
-        "💰 仮想通貨：ビットコイン・主要アルトの資金流入状況",
-        "💴 為替：ドル円の推移と介入警戒感のレベル",
-        "🌍 経済：インフレ指標や中央銀行の発言まとめ"
+        "🇯🇵 日本株：日経平均の動向と注目セクター",
+        "🇺🇸 米国株：NYダウ・ナスダックの最新分析",
+        "💰 仮想通貨：BTC・主要通貨の資金流入状況",
+        "💴 為替：ドル円の推移と介入警戒感",
+        "🌍 経済：金利・物価・中央銀行の動向"
     ]
     for cat in categories:
         news_text += f"■ {cat}\n"
         news_text += "　・重要度: ★★★★☆ (4)\n"
-        news_text += "　・内容: 現在の市場環境を初心者の方にも分かりやすく詳細に解説します。\n"
-        news_text += "　・行動提案: 今取るべき具体的なリスク管理やエントリーの判断基準を提示します。\n\n"
+        news_text += "　・詳細: 市場環境を初心者の方にも分かりやすく解説します。\n"
+        news_text += "　・行動: 今取るべき具体的な戦略を提案します。\n\n"
     news_text += "--------------------------\n"
     return news_text
 
-# --- 3. 画面構成 ---
-st.set_page_config(page_title="AI投資秘書 PRO", layout="wide")
-st.title("🛡️ AI投資秘書 PRO：マルチアセット高度分析")
+# --- 3. Streamlit 画面構成 ---
+st.set_page_config(page_title="AI投資秘書 PRO - Broadcast", layout="wide")
+st.title("🛡️ AI投資秘書 PRO：一斉配信ハブ")
 
-# サイドバーUI
-st.sidebar.header("📊 資産ポートフォリオ")
-asset_cat = st.sidebar.radio("アセットを選択", ["日本株", "暗号資産"])
+# サイドバーでの銘柄選択
+st.sidebar.header("📊 資産分析・配信設定")
+asset_cat = st.sidebar.radio("アセットクラス", ["日本株", "暗号資産"])
 stocks_dict = STOCKS if asset_cat == "日本株" else CRYPTOS
-selected_name = st.sidebar.selectbox("銘柄を選択", list(stocks_dict.keys()))
+selected_name = st.sidebar.selectbox("分析銘柄を選択", list(stocks_dict.keys()))
 ticker = stocks_dict[selected_name]
 
 budget = st.sidebar.number_input("運用予算 (円)", value=1000000, step=100000)
 loss_cut_rate = st.sidebar.slider("損切りライン (%)", 1, 20, 5)
 
-# --- 4. データ取得 ---
+# --- 4. データ処理 ---
 @st.cache_data(ttl=3600)
 def get_data(symbol):
     data = yf.download(symbol, period="3y", interval="1d", auto_adjust=True)
@@ -92,7 +94,7 @@ else:
     current_price = df['Close'].iloc[-1]
     stop_loss_price = current_price * (1 - loss_cut_rate / 100)
 
-    # チャート表示
+    # グラフ描画
     fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="価格")])
     fig.add_trace(go.Scatter(x=df.index, y=df['Upper'], line=dict(color='rgba(255,0,0,0.2)'), name="BB上界"))
     fig.add_trace(go.Scatter(x=df.index, y=df['Lower'], line=dict(color='rgba(0,0,0,0.2)'), name="BB下界"))
@@ -100,13 +102,13 @@ else:
     st.plotly_chart(fig, use_container_width=True)
 
     col1, col2 = st.columns(2)
-    col1.metric("現在価格", f"{current_price:,.1f} 円")
+    col1.metric(f"{selected_name} 現在価格", f"{current_price:,.1f} 円")
     col2.metric("損切り目安", f"{stop_loss_price:,.1f} 円")
 
-    # 5. ボタン実行
-    if st.button("🚀 最新5ジャンルニュース ＆ AI精密分析を実行"):
-        with st.spinner('市場データを深層解析中...'):
-            # AI学習
+    # --- 5. 一斉配信ボタンの実行 ---
+    if st.button("📢 全フォロワーへ一斉配信を実行"):
+        with st.spinner('世界中のニュースと15銘柄のデータを解析中...'):
+            # AI学習（精密モード）
             df['Target'] = (df['Close'].shift(-1) > df['Close']).astype(int)
             train = df.dropna()
             features = ['Close', 'MACD', 'Signal', 'RSI', 'MA5', 'MA20']
@@ -116,25 +118,29 @@ else:
             
             res_icon = "📈 上昇予想" if pred == 1 else "📉 停滞注意"
             
-            # メッセージ構築
-            market_news = get_detailed_news()
+            # メッセージ構築（ニュースが先、予測が後）
+            news_part = get_detailed_news()
             
-            prediction_results = "🚀 【15銘柄AI予測まとめ】\n"
-            all_items = {**STOCKS, **CRYPTOS}
-            for name, tick in all_items.items():
-                prediction_results += f"・{name}: 分析完了（詳細はアプリへ）\n"
+            summary_part = "🚀 【15銘柄AI予測サマリー】\n"
+            all_assets = {**STOCKS, **CRYPTOS}
+            for name, _ in all_assets.items():
+                summary_part += f"・{name}: 分析完了（詳細はアプリへ）\n"
             
-            body = f"\n🎯 【個別ピックアップ分析】\n対象: {selected_name}\n判定: {res_icon}\n"
-            body += f"損切りライン: {stop_loss_price:,.1f}円\n"
+            pickup_part = f"\n🎯 【本日のピックアップ分析】\n対象: {selected_name}\n判定: {res_icon}\n"
+            pickup_part += f"損切りライン: {stop_loss_price:,.1f}円\n"
+            pickup_part += "根拠: MACD・ボリンジャーバンドの高度解析に基づく。"
             
-            final_msg = market_news + prediction_results + body
+            final_msg = news_part + summary_part + pickup_part
             
-            resp = send_line(final_msg)
+            # ブロードキャスト送信
+            resp = broadcast_line(final_msg)
+            
             if resp.status_code == 200:
-                st.success("ニュースと分析結果をLINEに送信しました！")
+                st.success("フォロワー全員への一斉配信が成功しました！")
                 st.balloons()
             else:
-                st.error(f"LINE送信失敗: {resp.text}")
+                st.error(f"配信失敗: {resp.text}")
+                st.info("💡 解決策: LINE Official Account Managerで『応答モード』が『ボット』になっているか確認してください。")
 
 st.markdown("---")
-st.caption("※朝8:45には、Web検索による『本物の最新詳細ニュース5本』と全銘柄予測が届きます。")
+st.caption("※このアプリは一斉配信（Broadcast API）を使用しています。送信先のIDを個別に登録する必要はありません。")
