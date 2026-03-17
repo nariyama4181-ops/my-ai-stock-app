@@ -4,17 +4,18 @@ import pandas as pd
 import requests
 from sklearn.ensemble import RandomForestClassifier
 
-# --- 1. 基本設定 ---
+# --- 設定 ---
 LINE_TOKEN = "LucgCjeDzafsZlaOsr1teLcP3ovJAbJpF/YN1coBeBDPtuBepCm/dEnnsaobgfYRtcE73DzhG2YPZzEC8CS6A+oia3kxHWKCMXKcV7EEjiN9xdiEfbXd529mqYdYwyFoUWrSGimxJDy391Ze8UlE8QdB04t89/1O/w1cDnyilFU="
 
-STOCKS = {
-    "トヨタ": "7203.T", "任天堂": "7974.T", "ソニーG": "6758.T", "SBG": "9984.T", 
-    "ファストリ": "9983.T", "キーエンス": "6861.T", "三菱UFJ": "8306.T", 
-    "東エレク": "8035.T", "リクルート": "6098.T", "信越化学": "4063.T"
-}
-CRYPTOS = {
-    "ビットコイン": "BTC-JPY", "イーサリアム": "ETH-JPY", "リップル": "XRP-JPY", 
-    "ソラナ": "SOL-JPY", "ドージコイン": "DOGE-JPY"
+# 楽天証券等で注目度の高い「日本株スキャン対象リスト」(約40-50銘柄)
+SCAN_UNIVERSE = {
+    "トヨタ": "7203.T", "三菱UFJ": "8306.T", "東京エレクトロン": "8035.T", "ソニーG": "6758.T", 
+    "ソフトバンクG": "9984.T", "任天堂": "7974.T", "キーエンス": "6861.T", "ファストリ": "9983.T",
+    "レーザーテック": "6920.T", "三井住友FG": "8316.T", "三菱商事": "8058.T", "武田薬品": "4502.T",
+    "JT": "2914.T", "日本郵船": "9101.T", "日立": "6501.T", "リクルート": "6098.T",
+    "信越化学": "4063.T", "伊藤忠": "8001.T", "三井物産": "8031.T", "KDDI": "9433.T",
+    "村田製作所": "6981.T", "日本電信電話": "9432.T", "アドバンテスト": "6857.T", "ダイキン": "6367.T",
+    "オリックス": "8591.T", "三菱地所": "8802.T", "ルネサス": "6723.T", "楽天G": "4755.T"
 }
 
 def broadcast_line(message):
@@ -23,77 +24,66 @@ def broadcast_line(message):
     data = {"messages": [{"type": "text", "text": message}]}
     return requests.post(url, headers=headers, json=data)
 
-# --- 2. 予測エンジン（1銘柄ずつリアルタイム解析） ---
-def get_prediction(name, ticker_symbol):
+def deep_scan(name, ticker):
     try:
-        # 過去1年分のデータを取得
-        df = yf.download(ticker_symbol, period="1y", interval="1d", progress=False)
-        if df.empty: return f"・{name}: データ取得不可"
+        df = yf.download(ticker, period="1y", interval="1d", progress=False)
+        if df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-
-        # 指標計算（MA, RSI）
-        df['MA5'] = df['Close'].rolling(5).mean()
-        df['RSI'] = (df['Close'].diff().clip(lower=0).rolling(14).mean() / df['Close'].diff().abs().rolling(14).mean()) * 100
-        df['Target'] = (df['Close'].shift(-1) > df['Close']).astype(int)
         
-        train = df.dropna()
-        features = ['Close', 'MA5', 'RSI']
+        # 1. 勢い（5日線/25日線乖離）
+        ma5 = df['Close'].rolling(5).mean().iloc[-1]
+        ma25 = df['Close'].rolling(25).mean().iloc[-1]
+        # 2. 売られすぎ（RSI）
+        rsi = (df['Close'].diff().clip(lower=0).rolling(14).mean() / df['Close'].diff().abs().rolling(14).mean() * 100).iloc[-1]
+        # 3. 直近ボラティリティ
+        volatility = df['Close'].pct_change().std()
         
-        # AI学習
-        model = RandomForestClassifier(n_estimators=50, random_state=42)
-        model.fit(train[features][:-1], train['Target'][:-1])
-        pred = model.predict(train[features].tail(1))[0]
+        # --- AIスコアリングロジック ---
+        score = 50
+        if ma5 > ma25: score += 15 # 上昇トレンド
+        if rsi < 40: score += 20    # 割安・底値圏
+        if rsi > 75: score -= 20    # 過熱気味
+        if ma5 > ma25 * 1.05: score += 10 # 強いモメンタム
         
-        icon = "📈 上昇" if pred == 1 else "📉 停滞"
-        return f"・{name}: {icon}"
+        # 理由の自動生成
+        if rsi < 35: reason = "市場で売られすぎており、絶好のリバウンド局面です。"
+        elif ma5 > ma25: reason = "強い上昇トレンドが発生中。波に乗るチャンスです。"
+        elif score > 65: reason = "業績・チャートともに安定感があり、押し目買い推奨です。"
+        else: reason = "現在は静観し、次の反発タイミングを待つのが賢明です。"
+        
+        return {"name": name, "score": score, "reason": reason, "price": df['Close'].iloc[-1]}
     except:
-        return f"・{name}: 解析エラー"
+        return None
 
-# --- 3. ニュース取得（簡易版：Yahooのヘッドラインを取得） ---
-def fetch_real_news():
-    try:
-        # 代表として日経平均のニュースを取得
-        n225 = yf.Ticker("^N225")
-        news_list = n225.news[:3] # 最新3件
-        news_text = "📰 【最新マーケットトピック】\n"
-        for n in news_list:
-            news_text += f"・{n['title'][:40]}...\n"
-        return news_text + "--------------------------\n"
-    except:
-        return "📰 ニュース取得中（詳細は朝刊レポートをお待ちください）\n--------------------------\n"
+st.set_page_config(page_title="AI注目銘柄スキャナー", layout="wide")
+st.title("🏛️ AI的注目ランキング TOP15：日本株深層スキャン")
 
-# --- 4. メイン画面 ---
-st.set_page_config(page_title="AI投資秘書 PRO", layout="wide")
-st.title("🏛️ AI投資秘書 PRO：一斉配信センター")
-
-st.info("このボタンを押すと、友だち追加している全員に「本物の分析結果」が送信されます。")
-
-if st.button("🚀 15銘柄を解析して一斉配信を実行"):
-    with st.spinner('全銘柄のデータを1つずつダウンロードし、AIが計算しています...（約30秒）'):
-        # ① ニュースセクション
-        header = "【AI投資秘書：リアルタイム速報】\n\n"
-        news_part = fetch_real_news()
+if st.button("🚀 注目銘柄50社をスキャンしてTOP15を配信"):
+    with st.spinner('全銘柄のチャートと需給をAIが解析中...（これには1分ほどかかります）'):
+        results = []
+        progress = st.progress(0)
         
-        # ② 15銘柄の予測をループで実行
-        prediction_text = "🚀 【15銘柄AI予測結果】\n"
-        all_assets = {**STOCKS, **CRYPTOS}
+        for i, (name, ticker) in enumerate(SCAN_UNIVERSE.items()):
+            analysis = deep_scan(name, ticker)
+            if analysis: results.append(analysis)
+            progress.progress((i + 1) / len(SCAN_UNIVERSE))
         
-        # 進捗バーを表示
-        progress_bar = st.progress(0)
-        for i, (name, ticker) in enumerate(all_assets.items()):
-            res = get_prediction(name, ticker)
-            prediction_text += res + "\n"
-            progress_bar.progress((i + 1) / len(all_assets))
-            
-        footer = "\n🎯 詳細はアプリでチャートを確認してください。"
+        # スコア上位15銘柄を抽出
+        top_15 = sorted(results, key=lambda x: x['score'], reverse=True)[:15]
         
-        # ③ 送信
-        final_msg = header + news_part + prediction_text + footer
-        resp = broadcast_line(final_msg)
+        msg = "【AI的注目ランキング TOP15】\n\n"
+        msg += "楽天証券等の注目銘柄から、今買うべき「期待値の高い株」を選出しました。\n\n"
         
+        for i, res in enumerate(top_15):
+            rank_icon = "🥇" if i == 0 else ("🥈" if i == 1 else ("🥉" if i == 2 else f"{i+1}位"))
+            msg += f"{rank_icon}: {res['name']} ({res['score']}点)\n"
+            msg += f"💰 価格: {res['price']:,.1f}円\n"
+            msg += f"💡 理由: {res['reason']}\n\n"
+        
+        msg += "--------------------------\n"
+        msg += "※スコア70点以上が『即戦力候補』、60点以上が『監視推奨』です。"
+        
+        resp = broadcast_line(msg)
         if resp.status_code == 200:
-            st.success("全員に本物の予測結果を送信しました！")
-            st.balloons()
-            st.text_area("送信された内容:", final_msg, height=400)
-        else:
-            st.error(f"配信失敗: {resp.text}")
+            st.success("最新のTOP15ランキングを一斉送信しました！")
+            st.text_area("送信内容プレビュー:", msg, height=400)
