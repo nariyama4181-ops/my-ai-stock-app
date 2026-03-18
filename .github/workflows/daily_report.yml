@@ -1,0 +1,29 @@
+name: Daily AI Investment Report
+
+on:
+  schedule:
+    # 日本時間 08:20 (UTC 23:20) に実行
+    - cron: '45 23 * * *'
+  workflow_dispatch: # 手動実行も可能にするボタン
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas requests scikit-learn
+
+      - name: Run daily report
+        env:
+          LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
+        run: python daily_batch.py
