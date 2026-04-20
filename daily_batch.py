@@ -5,7 +5,8 @@ import os
 import time
 import random
 
-# --- 1. 基本設定（GitHub Secretsから取得） ---
+# --- 1. 基本設定 ---
+# GitHub Secretsから取得。ローカルテスト時は環境変数に設定してください。
 LINE_TOKEN = os.getenv("LINE_TOKEN")
 
 TICKER_NAMES = {
@@ -20,88 +21,98 @@ TICKER_NAMES = {
 def broadcast_line(message):
     """LINEの仕様に基づき、分割して一斉送信を行う"""
     if not message or not LINE_TOKEN:
-        print("Error: LINE_TOKEN is missing or message is empty.")
+        print("❌ Error: LINE_TOKEN が設定されていません。")
         return
+    
     url = "https://api.line.me/v2/bot/message/broadcast"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_TOKEN}"
+    }
+    
+    # LINEの1メッセージ制限に合わせて分割
     chunks = [message[i:i+2000] for i in range(0, len(message), 2000)]
     for chunk in chunks:
-        res = requests.post(url, headers=headers, json={"messages": [{"type": "text", "text": chunk}]})
-        print(f"Status: {res.status_code}, Response: {res.text}")
+        payload = {"messages": [{"type": "text", "text": chunk}]}
+        res = requests.post(url, headers=headers, json=payload)
+        if res.status_code == 200:
+            print("✅ LINE配信成功")
+        else:
+            print(f"❌ LINE配信失敗: {res.status_code} - {res.text}")
         time.sleep(0.5)
 
-# --- 2. 【最高品質・非定型解析エンジン】 ---
-def generate_dynamic_insight(df):
-    """テクニカル指標を組み合わせて、血の通った解析文を生成する"""
-    last = df['Close'].iloc[-1]
-    ma25 = df['Close'].rolling(25).mean().iloc[-1]
-    rsi = (df['Close'].diff().clip(lower=0).rolling(14).mean() / df['Close'].diff().abs().rolling(14).mean() * 100).iloc[-1]
-    vol_r = df['Volume'].iloc[-1] / df['Volume'].rolling(20).mean().iloc[-1]
-    diff = ((last / ma25) - 1) * 100
+# --- 2. 解析エンジン（修正済み） ---
+def generate_dynamic_insight(name, df):
+    """
+    引数に name を追加して呼び出し側と整合性を合わせました。
+    """
+    try:
+        last = df['Close'].iloc[-1]
+        ma25 = df['Close'].rolling(25).mean().iloc[-1]
+        
+        # RSIの計算
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs.iloc[-1]))
+        
+        vol_r = df['Volume'].iloc[-1] / df['Volume'].rolling(20).mean().iloc[-1]
+        diff = ((last / ma25) - 1) * 100
 
-    # RSIパーツ（投資家心理の洞察）
-    if rsi < 30:
-        rsi_msg = random.choice([
-            f"RSI {rsi:.1f}。過熱感は皆無で、長期投資家が静かに買い集める『仕込み時』のサインが出ています。",
-            f"RSIは{rsi:.1f}まで沈み込み、大衆がパニックに陥る中で『賢いマネー』が流入を開始する絶好の局面です。"
-        ])
-    elif rsi > 70:
-        rsi_msg = random.choice([
-            f"RSI {rsi:.1f}。短期的な過熱が極まっており、ここからは『チキンレース』の様相。利益確定の準備を。",
-            f"RSIは{rsi:.1f}。山高ければ谷深し。現在の熱狂は、一時的な調整を呼び込む前兆と言えます。"
-        ])
-    else:
-        rsi_msg = f"RSI {rsi:.1f}で推移。過熱も沈滞もしておらず、次の材料待ちでエネルギーを溜めています。"
+        # RSI洞察
+        if rsi < 30:
+            rsi_msg = f"RSI {rsi:.1f}。過熱感は皆無で、『仕込み時』のサインが出ています。"
+        elif rsi > 70:
+            rsi_msg = f"RSI {rsi:.1f}。短期的な過熱が極まっており、利益確定の準備を。"
+        else:
+            rsi_msg = f"RSI {rsi:.1f}で推移。エネルギーを溜めている段階です。"
 
-    # トレンドパーツ（移動平均乖離率）
-    if diff > 5:
-        trend_msg = random.choice([
-            f"25日線から{diff:.1f}%上放れ。強い上昇慣性が働いており、トレンドフォローの好機です。",
-            f"移動平均線を大きく引き離す{diff:.1f}%の急伸。市場はこの銘柄の価値を再定義し始めています。"
-        ])
-    elif diff < -5:
-        trend_text = f"25日線から{abs(diff):.1f}%乖離。自律反発のバネが限界まで引き絞られています。"
-        trend_msg = f"{trend_text} ここから先は『売り手の枯渇』を待つ時間帯に入ります。"
-    else:
-        trend_msg = "移動平均線に収束しており、上下どちらかに大きく抜ける直前の『嵐の前の静けさ』です。"
+        # トレンド洞察
+        if diff > 5:
+            trend_msg = f"25日線から{diff:.1f}%上放れ。強い上昇慣性が働いています。"
+        elif diff < -5:
+            trend_msg = f"25日線から{abs(diff):.1f}%乖離。自律反発のバネが限界です。"
+        else:
+            trend_msg = "移動平均線に収束しており、『嵐の前の静けさ』です。"
 
-    # 需給パーツ（出来高）
-    if vol_r > 1.5:
-        vol_msg = f"出来高は平時の{vol_r:.1f}倍と急増。機関投資家の本気買いが入り、局面が動いています。"
-    else:
-        vol_msg = "取引量は平穏。個人投資家主体の需給となっており、底堅さがあります。"
+        return f"{rsi_msg} {trend_msg}"
+    except Exception as e:
+        return f"解析エラー: {e}"
 
-    return f"{rsi_msg} {trend_msg} {vol_msg}"
-
-# --- 3. メイン実行ロジック ---
+# --- 3. メインロジック ---
 def run_daily_scan():
+    print("🔍 市場データの解析を開始します...")
     watchlist = list(TICKER_NAMES.keys())
-    # 最新データの取得
     data = yf.download(watchlist, period="1y", progress=False)
     
     results = []
     for t in watchlist:
         try:
-            df = data.xs(t, level=1, axis=1) if isinstance(data.columns, pd.MultiIndex) else data
-            rsi = (df['Close'].diff().clip(lower=0).rolling(14).mean() / df['Close'].diff().abs().rolling(14).mean() * 100).iloc[-1]
+            # MultiIndex対応
+            df = data.xs(t, level=1, axis=1) if isinstance(data.columns, pd.MultiIndex) else data[t]
             
-            # スコアリング（割安、または強い上昇トレンドを抽出）
+            # RSI再計算（スコアリング用）
+            delta = df['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rsi_val = 100 - (100 / (1 + (gain / loss).iloc[-1]))
+            
             score = 50
-            if rsi < 35: score += 30  # 売られすぎ
-            if df['Close'].iloc[-1] > df['Close'].rolling(25).mean().iloc[-1]: score += 20 # 順張り
+            if rsi_val < 35: score += 30
+            if df['Close'].iloc[-1] > df['Close'].rolling(25).mean().iloc[-1]: score += 20
             
             results.append({
                 "name": TICKER_NAMES[t], 
                 "code": t, 
                 "score": score, 
-                "insight": generate_dynamic_insight(TICKER_NAMES[t], df), 
+                "insight": generate_dynamic_insight(TICKER_NAMES[t], df), # ここを修正
                 "price": df['Close'].iloc[-1]
             })
         except Exception as e:
-            print(f"Error scanning {t}: {e}")
+            print(f"⚠️ {t} の解析をスキップしました: {e}")
             continue
     
-    # スコア上位10銘柄を抽出
     top_10 = sorted(results, key=lambda x: x['score'], reverse=True)[:10]
     
     msg = "🏆 【AI投資秘書：深層注目ランキング TOP 10】\n"
